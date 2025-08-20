@@ -1,0 +1,58 @@
+# === Compiled class files ===
+*.class
+
+# === Logs and temp files ===
+*.log
+*.tmp
+hs_err_pid*
+
+# === Build output ===
+/target/
+/build/
+
+# === Maven / Gradle ===
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.gradle/
+
+# === IDE files ===
+# IntelliJ IDEA
+/.idea/
+/*.iml
+# Eclipse
+/.project
+/.classpath
+/.settings/
+/.apt_generated/
+/.factorypath
+# NetBeans
+/nbproject/private/
+/build/
+/nbbuild/
+/dist/
+
+# === VS Code ===
+.vscode/
+
+# === Operating System ===
+.DS_Store
+Thumbs.db
+
+# === Environment variables / secrets ===
+.env
+*.env
+application-*.properties
+
+# === AWS credentials ===
+credentials
+*.pem
+
+# === Socket.io debug ===
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
