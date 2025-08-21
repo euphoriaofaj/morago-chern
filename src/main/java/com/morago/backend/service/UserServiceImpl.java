@@ -11,6 +11,7 @@ import com.morago.backend.repository.RoleRepository;
 import com.morago.backend.repository.UserRepository;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
@@ -20,98 +21,228 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+/**
+ * Service implementation for managing user operations.
+ * Handles user CRUD operations, authentication, and role management.
+ */
+@Slf4j
 @Service
 @RequiredArgsConstructor
-public class UserServiceImpl implements UserService{
+public class UserServiceImpl implements UserService {
+    
     private final UserRepository userRepository;
     private final RoleRepository roleRepository;
     private final UserMapper userMapper;
     private final PasswordEncoder passwordEncoder;
     private final RefreshTokenRepository refreshTokenRepository;
 
+    /**
+     * Finds a user by username.
+     * 
+     * @param username the username to search for
+     * @return Optional containing the User if found
+     */
     @Override
     public Optional<User> findByUsername(String username) {
+        log.debug("Searching for user with username: {}", username);
         return userRepository.findByUsername(username);
     }
 
+    /**
+     * Finds a user by username or throws exception if not found.
+     * 
+     * @param username the username to search for
+     * @return the User entity
+     * @throws UserNotFoundException if user is not found
+     */
     @Override
     public User findByUsernameOrThrow(String username) {
-        return userRepository.findByUsername(username)
-                .orElseThrow(() -> new UserNotFoundException(username));
+        return findByUsername(username)
+                .orElseThrow(() -> {
+                    log.warn("User not found with username: {}", username);
+                    return new UserNotFoundException(username);
+                });
     }
 
+    /**
+     * Creates a new user with the provided information.
+     * 
+     * @param dto the user creation request data
+     * @return UserResponseDto containing the created user information
+     * @throws IllegalArgumentException if username already exists or password is missing
+     */
     @Override
     @Transactional
     public UserResponseDto createUser(UserRequestDto dto) {
-        if (userRepository.existsByUsername(dto.getUsername())) {
-            throw new IllegalArgumentException("Username already exists");
-        }
-        User user = userMapper.toEntity(dto);
-
-        if (dto.getPassword() == null || dto.getPassword().isBlank()) {
-            throw new IllegalArgumentException("Password is required for new user");
-        }
-        user.setPassword(passwordEncoder.encode(dto.getPassword()));
-
-        user.setRoles(resolveRoles(dto.getRoles()));
-
-        return userMapper.toResponseDto(userRepository.save(user));
+        log.debug("Creating new user with username: {}", dto.getUsername());
+        
+        validateUserCreation(dto);
+        
+        User user = buildNewUser(dto);
+        User savedUser = userRepository.save(user);
+        
+        log.info("User created successfully with ID: {} and username: {}", 
+                savedUser.getId(), savedUser.getUsername());
+        
+        return userMapper.toResponseDto(savedUser);
     }
 
+    /**
+     * Retrieves a user by their ID.
+     * 
+     * @param id the user ID
+     * @return UserResponseDto containing user information
+     * @throws UserNotFoundException if user is not found
+     */
     @Override
     public UserResponseDto getUser(Long id) {
+        log.debug("Retrieving user with ID: {}", id);
+        
         return userRepository.findById(id)
-                .map(userMapper::toResponseDto)
-                .orElseThrow(() -> new UserNotFoundException(String.valueOf(id)));
+                .map(user -> {
+                    log.debug("User found: {}", user.getUsername());
+                    return userMapper.toResponseDto(user);
+                })
+                .orElseThrow(() -> {
+                    log.warn("User not found with ID: {}", id);
+                    return new UserNotFoundException(String.valueOf(id));
+                });
     }
 
+    /**
+     * Retrieves all users in the system.
+     * 
+     * @return List of UserResponseDto containing all users
+     */
     @Override
     public List<UserResponseDto> getAllUsers() {
-        return userRepository.findAll().stream()
+        log.debug("Retrieving all users");
+        
+        List<User> users = userRepository.findAll();
+        log.info("Found {} users", users.size());
+        
+        return users.stream()
                 .map(userMapper::toResponseDto)
                 .collect(Collectors.toList());
     }
 
+    /**
+     * Updates an existing user with new information.
+     * 
+     * @param id the user ID to update
+     * @param dto the updated user information
+     * @return UserResponseDto containing updated user information
+     * @throws UserNotFoundException if user is not found
+     */
     @Override
     @Transactional
     public UserResponseDto updateUser(Long id, UserRequestDto dto) {
-        User existing = userRepository.findById(id)
-                .orElseThrow(() -> new UserNotFoundException(String.valueOf(id)));
-
-        existing.setUsername(dto.getUsername());
-        existing.setFirstName(dto.getFirstName());
-        existing.setLastName(dto.getLastName());
-        existing.setBalance(dto.getBalance());
-        existing.setActive(dto.isActive());
-        existing.setOnBoardingStatus(dto.getOnBoardingStatus());
-
-        if (dto.getPassword() != null && !dto.getPassword().isBlank()) {
-            existing.setPassword(passwordEncoder.encode(dto.getPassword()));
-        }
-
-        if (dto.getRoles() != null) {
-            existing.setRoles(resolveRoles(dto.getRoles()));
-        }
-
-        return userMapper.toResponseDto(userRepository.save(existing));
+        log.debug("Updating user with ID: {}", id);
+        
+        User existingUser = findUserByIdOrThrow(id);
+        updateUserFields(existingUser, dto);
+        
+        User updatedUser = userRepository.save(existingUser);
+        
+        log.info("User updated successfully: {}", updatedUser.getUsername());
+        return userMapper.toResponseDto(updatedUser);
     }
 
+    /**
+     * Deletes a user and all associated refresh tokens.
+     * 
+     * @param id the user ID to delete
+     * @throws UserNotFoundException if user is not found
+     */
     @Override
     @Transactional
     public void deleteUser(Long id) {
-        User user = userRepository.findById(id)
-                .orElseThrow(() -> new UserNotFoundException("ID " + id));
-     //   userRepository.deleteById(id);
+        log.debug("Deleting user with ID: {}", id);
+        
+        User user = findUserByIdOrThrow(id);
+        String username = user.getUsername();
+        
+        // Clean up associated refresh tokens first
         refreshTokenRepository.deleteByUser(user);
         userRepository.delete(user);
+        
+        log.info("User deleted successfully: {}", username);
+    }
+    
+    /**
+     * Validates user creation request.
+     */
+    private void validateUserCreation(UserRequestDto dto) {
+        if (userRepository.existsByUsername(dto.getUsername())) {
+            log.warn("Attempt to create user with existing username: {}", dto.getUsername());
+            throw new IllegalArgumentException("Username already exists");
+        }
+        
+        if (dto.getPassword() == null || dto.getPassword().isBlank()) {
+            log.warn("Attempt to create user without password");
+            throw new IllegalArgumentException("Password is required for new user");
+        }
+    }
+    
+    /**
+     * Builds a new User entity from the request DTO.
+     */
+    private User buildNewUser(UserRequestDto dto) {
+        User user = userMapper.toEntity(dto);
+        user.setPassword(passwordEncoder.encode(dto.getPassword()));
+        user.setRoles(resolveRoles(dto.getRoles()));
+        return user;
+    }
+    
+    /**
+     * Finds user by ID or throws exception.
+     */
+    private User findUserByIdOrThrow(Long id) {
+        return userRepository.findById(id)
+                .orElseThrow(() -> {
+                    log.warn("User not found with ID: {}", id);
+                    return new UserNotFoundException(String.valueOf(id));
+                });
+    }
+    
+    /**
+     * Updates user fields from DTO.
+     */
+    private void updateUserFields(User user, UserRequestDto dto) {
+        user.setUsername(dto.getUsername());
+        user.setFirstName(dto.getFirstName());
+        user.setLastName(dto.getLastName());
+        user.setBalance(dto.getBalance());
+        user.setActive(dto.isActive());
+        user.setOnBoardingStatus(dto.getOnBoardingStatus());
+
+        if (dto.getPassword() != null && !dto.getPassword().isBlank()) {
+            user.setPassword(passwordEncoder.encode(dto.getPassword()));
+        }
+
+        if (dto.getRoles() != null) {
+            user.setRoles(resolveRoles(dto.getRoles()));
+        }
     }
 
+    /**
+     * Resolves role names to Role entities.
+     * 
+     * @param roleNames set of role name strings
+     * @return set of Role entities
+     * @throws IllegalArgumentException if any role is not found
+     */
     private Set<Role> resolveRoles(Set<String> roleNames) {
-        if (roleNames == null || roleNames.isEmpty()) return new HashSet<>();
+        if (roleNames == null || roleNames.isEmpty()) {
+            return new HashSet<>();
+        }
+        
         return roleNames.stream()
                 .map(name -> roleRepository.findByNameEnum(name)
-                        .orElseThrow(() -> new IllegalArgumentException("Role not found: " + name)))
+                        .orElseThrow(() -> {
+                            log.warn("Role not found: {}", name);
+                            return new IllegalArgumentException("Role not found: " + name);
+                        }))
                 .collect(Collectors.toSet());
     }
 }
-
