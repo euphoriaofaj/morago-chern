@@ -10,10 +10,13 @@ import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.ExampleObject;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.transaction.Transactional;
-import lombok.AllArgsConstructor;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -22,97 +25,196 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-@Tag(name = "Authentication", description = "User authentication and token management")
+/**
+ * REST controller for handling authentication operations.
+ * Provides endpoints for login, token refresh, and logout functionality.
+ */
+@Tag(name = "Authentication", description = "User authentication and token management endpoints")
+@Slf4j
 @RestController
-@AllArgsConstructor
+@RequiredArgsConstructor
 @RequestMapping("/auth")
 public class MainController {
+    
     private final AuthService authService;
     private final RefreshTokenService refreshTokenService;
 
+    /**
+     * Authenticates user credentials and returns JWT tokens.
+     * 
+     * @param authRequest containing username and password
+     * @return ResponseEntity with JWT tokens or error response
+     */
     @Operation(
-            summary = "Log in with username and password",
-            description = "Authenticates the user and returns a JWT access token and refresh token.",
+            summary = "Authenticate user and generate tokens",
+            description = "Validates user credentials and returns JWT access token and refresh token for subsequent API calls.",
             requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
                     required = true,
+                    description = "User credentials for authentication",
                     content = @Content(
                             schema = @Schema(implementation = JWTRequest.class),
                             examples = @ExampleObject(
-                                    name = "Example",
-                                    value = "{\"username\":\"admin@example.com\",\"password\":\"P@ssw0rd\"}"
+                                    name = "Login Example",
+                                    summary = "Sample login request",
+                                    value = "{\"username\":\"01012345673\",\"password\":\"123456\"}"
                             )
                     )
-            ),
-            responses = {
-                    @ApiResponse(responseCode = "200", description = "Successful authentication",
-                            content = @Content(schema = @Schema(implementation = JWTResponse.class))),
-                    @ApiResponse(responseCode = "401", description = "Invalid username or password")
-            }
+            )
     )
-    @PostMapping("/login")
-    public ResponseEntity<JWTResponse> login(@RequestBody JWTRequest authRequest) {
-        JWTResponse response = authService.createAuthToken(authRequest);
-        return ResponseEntity.ok(response);
-    }
-
-    @Operation(
-            summary = "Refresh access token",
-            description = "Generates a new access token using a valid refresh token.",
-            requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
-                    required = true,
+    @ApiResponses(value = {
+            @ApiResponse(
+                    responseCode = "200", 
+                    description = "Authentication successful",
                     content = @Content(
-                            schema = @Schema(implementation = RefreshTokenRequest.class),
+                            schema = @Schema(implementation = JWTResponse.class),
                             examples = @ExampleObject(
-                                    name = "Example",
-                                    value = "{\"refreshToken\":\"<your_refresh_token>\"}"
+                                    name = "Success Response",
+                                    value = "{\"accessToken\":\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...\",\"refreshToken\":\"dGhpc2lzYXJlZnJlc2h0b2tlbg==\"}"
                             )
                     )
             ),
-            responses = {
-                    @ApiResponse(responseCode = "200", description = "New access token generated",
-                            content = @Content(schema = @Schema(implementation = JWTResponse.class))),
-                    @ApiResponse(responseCode = "401", description = "Invalid or expired refresh token")
-            }
-    )
-    @PostMapping("/refresh_token")
-    public ResponseEntity<JWTResponse> refreshToken(@RequestBody RefreshTokenRequest request) {
+            @ApiResponse(
+                    responseCode = "401", 
+                    description = "Authentication failed - Invalid credentials",
+                    content = @Content(
+                            schema = @Schema(type = "object"),
+                            examples = @ExampleObject(
+                                    name = "Error Response",
+                                    value = "{\"error\":\"Invalid username or password\"}"
+                            )
+                    )
+            ),
+            @ApiResponse(
+                    responseCode = "400", 
+                    description = "Bad request - Invalid input format"
+            )
+    })
+    @PostMapping("/login")
+    public ResponseEntity<JWTResponse> login(@Valid @RequestBody JWTRequest authRequest) {
+        log.info("Login attempt for user: {}", authRequest.getUsername());
+        
         try {
-            JWTResponse jwtResponse = refreshTokenService.refreshToken(request.getRefreshToken());
-            return ResponseEntity.ok(jwtResponse);
-        } catch (RuntimeException e) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(new JWTResponse("", ""));
+            JWTResponse response = authService.createAuthToken(authRequest);
+            log.info("Login successful for user: {}", authRequest.getUsername());
+            return ResponseEntity.ok(response);
+            
+        } catch (Exception e) {
+            log.warn("Login failed for user: {} - {}", authRequest.getUsername(), e.getMessage());
+            throw e; // Let global exception handler manage the response
         }
     }
 
+    /**
+     * Refreshes access token using a valid refresh token.
+     * 
+     * @param request containing the refresh token
+     * @return ResponseEntity with new JWT tokens or error response
+     */
     @Operation(
-            summary = "Log out",
-            description = "Invalidates the provided refresh token. Requires a valid Bearer token in the Authorization header.",
-            security = @SecurityRequirement(name = "bearerAuth"),
+            summary = "Refresh access token",
+            description = "Generates a new access token and refresh token using a valid refresh token. The old refresh token will be invalidated.",
             requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
                     required = true,
+                    description = "Valid refresh token for generating new tokens",
                     content = @Content(
                             schema = @Schema(implementation = RefreshTokenRequest.class),
                             examples = @ExampleObject(
-                                    name = "Example",
-                                    value = "{\"refreshToken\":\"<user_refresh_token>\"}"
+                                    name = "Refresh Token Example",
+                                    summary = "Sample refresh token request",
+                                    value = "{\"refreshToken\":\"dGhpc2lzYXJlZnJlc2h0b2tlbg==\"}"
+                            )
+                    )
+            )
+    )
+    @ApiResponses(value = {
+            @ApiResponse(
+                    responseCode = "200", 
+                    description = "Token refresh successful",
+                    content = @Content(schema = @Schema(implementation = JWTResponse.class))
+            ),
+            @ApiResponse(
+                    responseCode = "401", 
+                    description = "Token refresh failed - Invalid or expired refresh token",
+                    content = @Content(
+                            examples = @ExampleObject(
+                                    value = "{\"accessToken\":\"\",\"refreshToken\":\"\"}"
+                            )
+                    )
+            )
+    })
+    @PostMapping("/refresh_token")
+    public ResponseEntity<JWTResponse> refreshToken(@Valid @RequestBody RefreshTokenRequest request) {
+        log.debug("Token refresh request received");
+        
+        try {
+            JWTResponse jwtResponse = refreshTokenService.refreshToken(request.getRefreshToken());
+            log.info("Token refresh successful");
+            return ResponseEntity.ok(jwtResponse);
+            
+        } catch (RuntimeException e) {
+            log.warn("Token refresh failed: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(new JWTResponse("", ""));
+        }
+    }
+
+    /**
+     * Logs out user by invalidating their refresh token.
+     * 
+     * @param request containing the refresh token to invalidate
+     * @return ResponseEntity with success or error message
+     */
+    @Operation(
+            summary = "Logout user",
+            description = "Invalidates the user's refresh token, effectively logging them out. Requires valid authentication.",
+            security = @SecurityRequirement(name = "bearerAuth"),
+            requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                    required = true,
+                    description = "Refresh token to invalidate",
+                    content = @Content(
+                            schema = @Schema(implementation = RefreshTokenRequest.class),
+                            examples = @ExampleObject(
+                                    name = "Logout Example",
+                                    summary = "Sample logout request",
+                                    value = "{\"refreshToken\":\"dGhpc2lzYXJlZnJlc2h0b2tlbg==\"}"
+                            )
+                    )
+            )
+    )
+    @ApiResponses(value = {
+            @ApiResponse(
+                    responseCode = "200", 
+                    description = "Logout successful",
+                    content = @Content(
+                            examples = @ExampleObject(
+                                    value = "\"Logged out successfully\""
                             )
                     )
             ),
-            responses = {
-                    @ApiResponse(responseCode = "200", description = "Successfully logged out"),
-                    @ApiResponse(responseCode = "400", description = "Bad request"),
-                    @ApiResponse(responseCode = "401", description = "Unauthorized")
-            }
-    )
+            @ApiResponse(
+                    responseCode = "400", 
+                    description = "Bad request - Invalid refresh token"
+            ),
+            @ApiResponse(
+                    responseCode = "401", 
+                    description = "Unauthorized - Invalid or missing authentication"
+            )
+    })
     @PostMapping("/logout")
     @PreAuthorize("isAuthenticated()")
     @Transactional
-    public ResponseEntity<String> logout(@RequestBody RefreshTokenRequest request) {
+    public ResponseEntity<String> logout(@Valid @RequestBody RefreshTokenRequest request) {
+        log.debug("Logout request received");
+        
         try {
             refreshTokenService.logoutUserByRefreshToken(request.getRefreshToken());
+            log.info("User logout successful");
             return ResponseEntity.ok("Logged out successfully");
+            
         } catch (RuntimeException e) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(e.getMessage());
+            log.warn("Logout failed: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body("Logout failed: " + e.getMessage());
         }
     }
 }
