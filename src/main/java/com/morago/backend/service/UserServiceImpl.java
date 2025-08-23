@@ -4,14 +4,21 @@ import com.morago.backend.dto.user.UserRequestDto;
 import com.morago.backend.dto.user.UserResponseDto;
 import com.morago.backend.entity.Role;
 import com.morago.backend.entity.User;
+import com.morago.backend.entity.UserProfile;
+import com.morago.backend.entity.TranslatorProfile;
+import com.morago.backend.entity.enumFiles.Roles;
 import com.morago.backend.exception.UserNotFoundException;
 import com.morago.backend.mapper.UserMapper;
 import com.morago.backend.repository.RefreshTokenRepository;
 import com.morago.backend.repository.RoleRepository;
 import com.morago.backend.repository.UserRepository;
+import com.morago.backend.repository.UserProfileRepository;
+import com.morago.backend.repository.TranslatorProfileRepository;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
@@ -32,6 +39,8 @@ public class UserServiceImpl implements UserService {
     
     private final UserRepository userRepository;
     private final RoleRepository roleRepository;
+    private final UserProfileRepository userProfileRepository;
+    private final TranslatorProfileRepository translatorProfileRepository;
     private final UserMapper userMapper;
     private final PasswordEncoder passwordEncoder;
     private final RefreshTokenRepository refreshTokenRepository;
@@ -81,6 +90,9 @@ public class UserServiceImpl implements UserService {
         User user = buildNewUser(dto);
         User savedUser = userRepository.save(user);
         
+        // Automatically create appropriate profile based on user roles
+        createUserProfiles(savedUser);
+        
         log.info("User created successfully with ID: {} and username: {}", 
                 savedUser.getId(), savedUser.getUsername());
         
@@ -112,18 +124,16 @@ public class UserServiceImpl implements UserService {
     /**
      * Retrieves all users in the system.
      * 
-     * @return List of UserResponseDto containing all users
+     * @return Page of UserResponseDto containing all users
      */
     @Override
-    public List<UserResponseDto> getAllUsers() {
-        log.debug("Retrieving all users");
+    public Page<UserResponseDto> getAllUsers(Pageable pageable) {
+        log.debug("Retrieving all users with pagination");
         
-        List<User> users = userRepository.findAll();
-        log.info("Found {} users", users.size());
+        Page<User> users = userRepository.findAll(pageable);
+        log.info("Found {} users out of {} total", users.getNumberOfElements(), users.getTotalElements());
         
-        return users.stream()
-                .map(userMapper::toResponseDto)
-                .collect(Collectors.toList());
+        return users.map(userMapper::toResponseDto);
     }
 
     /**
@@ -164,9 +174,43 @@ public class UserServiceImpl implements UserService {
         
         // Clean up associated refresh tokens first
         refreshTokenRepository.deleteByUser(user);
+        
+        // Profiles will be automatically deleted due to cascade settings in User entity
         userRepository.delete(user);
         
         log.info("User deleted successfully: {}", username);
+    }
+    
+    /**
+     * Creates appropriate profiles for the user based on their roles.
+     */
+    private void createUserProfiles(User user) {
+        Set<String> roleNames = user.getRoles().stream()
+                .map(role -> role.getName().name())
+                .collect(Collectors.toSet());
+        
+        // Create UserProfile for all users (basic profile)
+        if (!userProfileRepository.existsByUserId(user.getId())) {
+            UserProfile userProfile = UserProfile.builder()
+                    .user(user)
+                    .isFreeCallMade(false)
+                    .build();
+            userProfileRepository.save(userProfile);
+            log.info("UserProfile created for user ID: {}", user.getId());
+        }
+        
+        // Create TranslatorProfile if user has TRANSLATOR role
+        if (roleNames.contains(Roles.ROLE_TRANSLATOR.name()) && 
+            !translatorProfileRepository.existsByUserId(user.getId())) {
+            
+            TranslatorProfile translatorProfile = TranslatorProfile.builder()
+                    .user(user)
+                    .isAvailable(false) // Default to not available until they complete their profile
+                    .isOnline(false)
+                    .build();
+            translatorProfileRepository.save(translatorProfile);
+            log.info("TranslatorProfile created for user ID: {}", user.getId());
+        }
     }
     
     /**

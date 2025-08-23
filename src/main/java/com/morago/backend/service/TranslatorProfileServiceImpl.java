@@ -13,12 +13,16 @@ import com.morago.backend.repository.TranslatorProfileRepository;
 import com.morago.backend.repository.UserRepository;
 import com.morago.backend.service.TranslatorProfileService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Set;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 @Transactional
@@ -32,8 +36,15 @@ public class TranslatorProfileServiceImpl implements TranslatorProfileService {
 
     @Override
     public TranslatorProfileDto create(TranslatorProfileDto dto) {
+        log.debug("Creating translator profile for user ID: {}", dto.getUserId());
+        
         User user = userRepo.findById(dto.getUserId())
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
+
+        // Check if profile already exists for this user
+        if (profileRepo.existsByUserId(dto.getUserId())) {
+            throw new IllegalArgumentException("Translator profile already exists for this user");
+        }
 
         Set<Language> languages = (dto.getLanguageIds() != null)
                 ? dto.getLanguageIds().stream()
@@ -60,7 +71,9 @@ public class TranslatorProfileServiceImpl implements TranslatorProfileService {
                 .themes(themes)
                 .build();
 
-        return mapper.toDto(profileRepo.save(profile));
+        TranslatorProfile saved = profileRepo.save(profile);
+        log.info("Translator profile created successfully with ID: {}", saved.getId());
+        return mapper.toDto(saved);
     }
 
     @Override
@@ -71,7 +84,34 @@ public class TranslatorProfileServiceImpl implements TranslatorProfileService {
     }
 
     @Override
+    public Page<TranslatorProfileDto> getAllWithFilters(
+            Pageable pageable,
+            Boolean isAvailable,
+            Boolean isOnline,
+            Long languageId,
+            Long themeId,
+            String levelOfKorean) {
+        
+        log.debug("Fetching translator profiles with filters - available: {}, online: {}, language: {}, theme: {}", 
+                isAvailable, isOnline, languageId, themeId);
+        
+        Page<TranslatorProfile> profiles = profileRepo.findWithFilters(
+                isAvailable, isOnline, languageId, themeId, levelOfKorean, pageable);
+        
+        return profiles.map(mapper::toDto);
+    }
+
+    @Override
+    public Page<TranslatorProfileDto> getAvailableByTheme(Long themeId, Pageable pageable) {
+        log.debug("Fetching available translators for theme ID: {}", themeId);
+        
+        Page<TranslatorProfile> profiles = profileRepo.findAvailableByTheme(themeId, pageable);
+        return profiles.map(mapper::toDto);
+    }
+    @Override
     public TranslatorProfileDto update(Long id, TranslatorProfileDto dto) {
+        log.debug("Updating translator profile with ID: {}", id);
+        
         TranslatorProfile profile = profileRepo.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Profile not found"));
 
@@ -97,14 +137,55 @@ public class TranslatorProfileServiceImpl implements TranslatorProfileService {
             profile.setThemes(themes);
         }
 
-        return mapper.toDto(profileRepo.save(profile));
+        TranslatorProfile updated = profileRepo.save(profile);
+        log.info("Translator profile updated successfully with ID: {}", updated.getId());
+        return mapper.toDto(updated);
+    }
+
+    @Override
+    public TranslatorProfileDto updateAvailability(Long id, Boolean isAvailable) {
+        log.debug("Updating availability for translator profile ID: {} to {}", id, isAvailable);
+        
+        TranslatorProfile profile = profileRepo.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Profile not found"));
+        
+        profile.setIsAvailable(isAvailable);
+        TranslatorProfile updated = profileRepo.save(profile);
+        
+        log.info("Availability updated successfully for translator profile ID: {}", id);
+        return mapper.toDto(updated);
+    }
+
+    @Override
+    public TranslatorProfileDto updateOnlineStatus(Long id, Boolean isOnline) {
+        log.debug("Updating online status for translator profile ID: {} to {}", id, isOnline);
+        
+        TranslatorProfile profile = profileRepo.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Profile not found"));
+        
+        profile.setIsOnline(isOnline);
+        TranslatorProfile updated = profileRepo.save(profile);
+        
+        log.info("Online status updated successfully for translator profile ID: {}", id);
+        return mapper.toDto(updated);
+    }
+
+    @Override
+    public boolean isProfileOwner(Long profileId, String username) {
+        return profileRepo.findById(profileId)
+                .map(profile -> profile.getUser().getUsername().equals(username))
+                .orElse(false);
     }
 
     @Override
     public void delete(Long id) {
+        log.debug("Deleting translator profile with ID: {}", id);
+        
         TranslatorProfile profile = profileRepo.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Profile not found"));
         profileRepo.delete(profile);
+        
+        log.info("Translator profile deleted successfully with ID: {}", id);
     }
 }
 
